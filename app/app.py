@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import html
 import os
 import sys
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -70,15 +70,14 @@ def _inject_dashboard_css() -> None:
                 font-size: 1rem;
                 margin: 0;
             }
-            .section-header {
+            /* Native Streamlit subheaders used as section titles */
+            h3.section-title {
                 font-size: 1.35rem;
                 font-weight: 700;
-                color: #a5d6a7;
-                margin: 1.75rem 0 0.85rem 0;
+                color: #a5d6a7 !important;
+                margin: 0 0 0.65rem 0 !important;
                 padding-bottom: 0.35rem;
                 border-bottom: 2px solid #2e7d32;
-                display: inline-block;
-                width: 100%;
             }
             .card {
                 background: #1a222d;
@@ -88,16 +87,31 @@ def _inject_dashboard_css() -> None:
                 margin-bottom: 1.25rem;
                 box-shadow: 0 8px 24px rgba(0,0,0,0.35);
             }
-            .metric-hover-card {
-                background: #161c26;
-                border: 1px solid #2a3544;
-                border-radius: 12px;
-                padding: 0.7rem 0.9rem;
-                box-shadow: 0 6px 20px rgba(0,0,0,0.35);
-                transition: transform 0.18s ease, box-shadow 0.18s ease;
-                min-height: 5.2rem;
-            }
-            .metric-hover-card:hover {
+            /* Metric tiles (main panel only; avoid wrapping st.metric in raw HTML) */
+            section[data-testid="stMain"] [data-testid="stMetric"],
+.main [data-testid="stMetric"] {
+    background: #161c26;
+    border: 1px solid #2a3544;
+    border-radius: 12px;
+    padding: 0.6rem 0.6rem;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
+    min-width: 0 !important;
+}
+
+/* Fix metric text overflow */
+section[data-testid="stMetric"] div[data-testid="stMetricValue"] {
+    font-size: 1.1rem !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+section[data-testid="stMetric"] div[data-testid="stMetricLabel"] {
+    font-size: 0.75rem !important;
+}
+            section[data-testid="stMain"] [data-testid="stMetric"]:hover,
+            .main [data-testid="stMetric"]:hover {
                 transform: scale(1.03);
                 box-shadow: 0 12px 32px rgba(46, 125, 50, 0.25);
                 border-color: #3d6b42;
@@ -121,136 +135,28 @@ def _card_close() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _section_header(title: str) -> None:
-    st.markdown(f'<p class="section-header">{title}</p>', unsafe_allow_html=True)
+def _section_title(title: str) -> None:
+    """Section heading: single HTML block to avoid phantom empty inputs below headers."""
+    st.markdown(
+        f'<h3 class="section-title">{html.escape(title)}</h3>',
+        unsafe_allow_html=True,
+    )
 
 
 def _plotly(fig) -> None:
     st.plotly_chart(fig, use_container_width=True, config=_PLOTLY_CONFIG)
 
 
-def _metric_in_card(col, label: str, value: str) -> None:
-    with col:
-        st.markdown('<div class="metric-hover-card">', unsafe_allow_html=True)
-        st.metric(label, value)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_dynamic_insights(
-    df: pd.DataFrame,
-    models: dict,
-    pred_df: pd.DataFrame | None,
-    selected_country: str,
-) -> None:
-    """Concise, rule-based callouts using Streamlit alert components."""
-    if df.empty:
-        st.info("No rows available for insights.")
-        return
-
-    loss = df["forest_loss_area"]
-    med = float(loss.median())
-    mean = float(loss.mean())
-
-    if mean > med * 1.4:
-        st.warning(
-            f"**High average loss vs median:** mean (**{mean:,.2f}**) is well above the median "
-            f"(**{med:,.2f}**), which often indicates heavy-tailed values or a few extreme years."
-        )
-    elif mean < med * 0.9:
-        st.info(
-            f"Mean loss (**{mean:,.2f}**) sits **below** the median (**{med:,.2f}**); "
-            "the distribution may skew toward smaller observations."
-        )
-
-    yearly = df.groupby("year", as_index=False)["forest_loss_area"].sum().sort_values("year")
-    if len(yearly) >= 2:
-        x = yearly["year"].to_numpy(dtype=float)
-        y = yearly["forest_loss_area"].to_numpy(dtype=float)
-        glob_slope, _ = np.polyfit(x, y, 1)
-        if glob_slope > 0:
-            st.warning(
-                f"**Rising global aggregate:** summed yearly loss **increases** in this file "
-                f"(approx. **{glob_slope:+.4f}** per year on a straight-line fit)."
-            )
-        elif glob_slope < 0:
-            st.success(
-                f"**Falling global aggregate:** summed yearly loss **decreases** "
-                f"(slope ≈ **{glob_slope:+.4f}** per year)—confirm with context before inferring recovery."
-            )
-        else:
-            st.info("Global aggregate loss is **roughly flat** across the sampled years.")
-
-    peak = yearly.loc[yearly["forest_loss_area"].idxmax()]
-    st.info(
-        f"**Peak global year:** **{int(peak['year'])}** with **{peak['forest_loss_area']:,.2f}** total loss."
-    )
-
-    top3 = df.groupby("country")["forest_loss_area"].sum().sort_values(ascending=False).head(3)
-    if len(top3):
-        parts = ", ".join(f"**{c}** ({v:,.2f})" for c, v in top3.items())
-        st.info(f"**Largest cumulative loss (top 3):** {parts}.")
-
-    if len(yearly) >= 3:
-        yoy = yearly.set_index("year")["forest_loss_area"].pct_change().dropna() * 100.0
-        if not yoy.empty:
-            z = (yoy - yoy.mean()) / (yoy.std() + 1e-12)
-            if (np.abs(z) > 1.5).any():
-                y_spike = int(yoy[np.abs(z) > 1.5].abs().idxmax())
-                st.warning(
-                    f"**Volatility:** **{y_spike}** shows an unusually large year-over-year swing "
-                    "relative to the rest of the series."
-                )
-
-    if models:
-        r2_vals = [res.r2 for res in models.values() if np.isfinite(res.r2)]
-        if r2_vals:
-            med_r2 = float(np.nanmedian(r2_vals))
-            if med_r2 < 0.25:
-                st.warning(
-                    f"**Model caution:** median hold-out **R² ≈ {med_r2:.2f}**—a simple linear trend "
-                    "in `year` explains little variance for many countries."
-                )
-            else:
-                st.success(
-                    f"**Model signal:** median hold-out **R² ≈ {med_r2:.2f}** for trained countries—"
-                    "trends are moderately captured by the linear specification."
-                )
-    else:
-        st.info("**Models:** no country has **≥3** distinct years, so linear regressions were not trained.")
-
-    if pred_df is not None and selected_country in pred_df["country"].values:
-        sub = pred_df[pred_df["country"] == selected_country].sort_values("year")
-        if len(sub) >= 2:
-            first = sub["predicted_forest_loss_area"].iloc[0]
-            last = sub["predicted_forest_loss_area"].iloc[-1]
-            if last > first:
-                st.warning(
-                    f"**Forecast for {selected_country}:** predicted loss **rises** over the selected horizon."
-                )
-            elif last < first:
-                st.success(
-                    f"**Forecast for {selected_country}:** predicted loss **falls** over the selected horizon."
-                )
-            else:
-                st.info(f"**Forecast for {selected_country}:** predicted loss is **flat** over the horizon.")
-
-    st.info(
-        "**Climate relevance:** persistent or rising forest loss weakens carbon storage and ecosystems; "
-        "pair these indicators with local drivers (land use, policy, and data quality)."
-    )
-
-
 st.set_page_config(
     page_title="Deforestation Dashboard",
     layout="wide",
-    page_icon="🌳",
 )
 _inject_dashboard_css()
 
 st.markdown(
     """
     <div class="dashboard-hero">
-        <h1>🌳 Deforestation Analysis & Monitoring</h1>
+        <h1>Deforestation Analysis & Monitoring</h1>
         <p>Upload forest loss data, explore trends on an interactive map, and review simple linear projections.</p>
     </div>
     """,
@@ -258,7 +164,7 @@ st.markdown(
 )
 
 with st.sidebar:
-    st.markdown("### 📁 Data & controls")
+    st.markdown("### Data & controls")
     st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
     uploaded = st.file_uploader("CSV (`year`, `country`, `forest_loss_area`)", type=["csv"])
     st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
@@ -280,8 +186,8 @@ except Exception as e:
     st.stop()
 
 st.markdown("---")
+_section_title("Cleaned data & summary")
 _card_open()
-_section_header("📊 Cleaned data & summary")
 c1, c2 = st.columns([1, 1])
 with c1:
     st.markdown("**Preview** (first 50 rows)")
@@ -289,17 +195,21 @@ with c1:
 with c2:
     st.markdown("**Dataset health**")
     m1, m2, m3, m4 = st.columns(4)
-    _metric_in_card(m1, "Rows", f"{len(df):,}")
-    _metric_in_card(m2, "Countries", f"{df['country'].nunique():,}")
-    _metric_in_card(m3, "Min year", f"{int(df['year'].min())}")
-    _metric_in_card(m4, "Max year", f"{int(df['year'].max())}")
+    with m1:
+        st.metric("Rows", f"{len(df):,}")
+    with m2:
+        st.metric("Countries", f"{df['country'].nunique():,}")
+    with m3:
+        st.metric("Min year", f"{int(df['year'].min())}")
+    with m4:
+        st.metric("Max year", f"{int(df['year'].max())}")
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
     st.markdown("**Country-wise statistics**")
     st.dataframe(summary_statistics(df), use_container_width=True)
 _card_close()
 
 st.markdown("---")
-_section_header("📈 Exploratory analysis")
+_section_title("Exploratory analysis")
 _card_open()
 left, right = st.columns([1, 1])
 with left:
@@ -309,7 +219,7 @@ with right:
 _card_close()
 
 st.markdown("---")
-_section_header("🔗 Correlation analysis")
+_section_title("Correlation analysis")
 _card_open()
 st.caption(
     "Pearson correlations across **numeric** columns in your file (e.g. **year**, **forest_loss_area**, "
@@ -319,7 +229,7 @@ _plotly(figure_correlation_heatmap(df))
 _card_close()
 
 st.markdown("---")
-_section_header("🗺️ Global forest loss map")
+_section_title("Global forest loss map")
 _card_open()
 st.caption(
     "Total **forest_loss_area** by **country**. Use **ISO 3166-1 alpha-3** codes (e.g. IND, USA) "
@@ -329,7 +239,7 @@ _plotly(figure_choropleth_country_loss(df))
 _card_close()
 
 st.markdown("---")
-_section_header("🔬 Advanced analysis")
+_section_title("Advanced analysis")
 _card_open()
 r1c1, r1c2 = st.columns([1, 1])
 with r1c1:
@@ -345,8 +255,8 @@ _plotly(figure_country_year_heatmap(df))
 _card_close()
 
 st.markdown("---")
+_section_title("Country deep dive")
 _card_open()
-_section_header("🌍 Country deep dive")
 country = st.selectbox(
     "Select a country for detailed trend, model, and evaluation",
     options=sorted(df["country"].unique().tolist()),
@@ -355,7 +265,7 @@ _plotly(figure_country_trend(df, country))
 _card_close()
 
 st.markdown("---")
-_section_header("🤖 Machine learning (linear regression)")
+_section_title("Machine learning (linear regression)")
 models = train_model_per_country(df)
 pred_df: pd.DataFrame | None = None
 
@@ -389,17 +299,8 @@ else:
         )
     _card_close()
 
-if models and pred_df is None:
-    pred_df = predict_next_years(models, last_year=int(df["year"].max()), n_years=horizon)
-
 st.markdown("---")
-_section_header("💡 Insights")
-_card_open()
-render_dynamic_insights(df, models, pred_df, country)
-_card_close()
-
-st.markdown("---")
-_section_header("📤 Export")
+_section_title("Export")
 _card_open()
 processed_dir = os.path.join(PROJECT_ROOT, "data", "processed")
 os.makedirs(processed_dir, exist_ok=True)
