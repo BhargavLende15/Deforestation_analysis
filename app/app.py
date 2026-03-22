@@ -249,13 +249,13 @@ def compute_conclusion_bullets(
     return out
 
 
-st.set_page_config(page_title="Deforestation Dashboard", layout="wide", page_icon="🌳")
+st.set_page_config(page_title="Deforestation Dashboard", layout="wide", )
 _inject_dashboard_css()
 
 st.markdown(
     """
     <div class="dashboard-hero">
-        <h1>🌳 Deforestation Analysis & Monitoring</h1>
+        <h1>Deforestation Analysis & Monitoring</h1>
         <p>Upload forest loss data, explore trends, and review simple linear projections.</p>
     </div>
     """,
@@ -263,7 +263,7 @@ st.markdown(
 )
 
 with st.sidebar:
-    st.markdown("### 📁 Data & controls")
+    st.markdown("### Data & controls")
     st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
     uploaded = st.file_uploader("CSV upload (`year`, `country`, `forest_loss_area`)", type=["csv"])
     st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
@@ -285,7 +285,7 @@ except Exception as e:
     st.stop()
 
 _card_open()
-_section_header("📊 Cleaned data & summary")
+_section_header("Cleaned data & summary")
 c1, c2 = st.columns([1, 1])
 with c1:
     st.markdown("**Preview** (first 50 rows)")
@@ -301,7 +301,7 @@ with c2:
     st.dataframe(summary_statistics(df), use_container_width=True)
 _card_close()
 
-_section_header("📈 Exploratory analysis")
+_section_header("Exploratory analysis")
 _card_open()
 left, right = st.columns([1, 1])
 with left:
@@ -310,7 +310,7 @@ with right:
     st.pyplot(plot_country_comparison(df, top_n=top_n), clear_figure=True)
 _card_close()
 
-_section_header("🔬 Advanced analysis")
+_section_header("Advanced analysis")
 _card_open()
 r1c1, r1c2 = st.columns([1, 1])
 with r1c1:
@@ -326,7 +326,7 @@ st.pyplot(plot_heatmap(df), clear_figure=True)
 _card_close()
 
 _card_open()
-_section_header("🌍 Country deep dive")
+_section_header("Country deep dive")
 country = st.selectbox(
     "Select a country for detailed trend, model, and evaluation",
     options=sorted(df["country"].unique().tolist()),
@@ -334,7 +334,7 @@ country = st.selectbox(
 st.pyplot(plot_country_trend(df, country), clear_figure=True)
 _card_close()
 
-_section_header("🤖 Machine learning (linear regression)")
+_section_header("Machine learning (linear regression)")
 models = train_model_per_country(df)
 pred_df: pd.DataFrame | None = None
 
@@ -371,7 +371,7 @@ else:
 if models and pred_df is None:
     pred_df = predict_next_years(models, last_year=int(df["year"].max()), n_years=horizon)
 
-_section_header("💡 Insights & conclusion")
+_section_header("Insights & conclusion")
 _card_open()
 st.markdown("### Key observations")
 obs = compute_key_observations(df)
@@ -381,7 +381,7 @@ concl = compute_conclusion_bullets(df, models, pred_df, country)
 st.markdown("\n".join(concl))
 _card_close()
 
-_section_header("📤 Export")
+_section_header("Export")
 _card_open()
 processed_dir = os.path.join(PROJECT_ROOT, "data", "processed")
 os.makedirs(processed_dir, exist_ok=True)
