@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -73,4 +73,28 @@ def predict_next_years(
                 }
             )
     return pd.DataFrame(rows).sort_values(["country", "year"])
+
+
+def get_test_set_actual_predicted(df: pd.DataFrame, country: str) -> Optional[pd.DataFrame]:
+    """
+    Fit the same per-country linear model as train_model_per_country and return
+    hold-out test predictions for actual vs predicted plots.
+    """
+    cdf = df[df["country"] == country].sort_values("year")
+    if cdf["year"].nunique() < 3:
+        return None
+
+    X, y = _prepare_xy(cdf)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.25, random_state=42
+    )
+    model = LinearRegression()
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    return pd.DataFrame(
+        {
+            "actual": y_test.ravel(),
+            "predicted": y_pred.ravel(),
+        }
+    )
 
