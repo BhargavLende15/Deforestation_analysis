@@ -13,18 +13,22 @@ if PROJECT_ROOT not in sys.path:
 
 from src.data_processing import clean_dataset, load_dataset, summary_statistics
 from src.model import get_test_set_actual_predicted, predict_next_years, train_model_per_country
-from src.visualization import (
-    plot_country_comparison,
-    plot_country_trend,
-    plot_cumulative,
-    plot_heatmap,
-    plot_model_evaluation,
-    plot_multi_country_trend,
-    plot_predictions,
-    plot_stacked_area,
-    plot_total_trend,
-    plot_yoy_growth,
+from src.plotly_figures import (
+    figure_choropleth_country_loss,
+    figure_correlation_heatmap,
+    figure_country_bars,
+    figure_country_trend,
+    figure_country_year_heatmap,
+    figure_cumulative,
+    figure_model_evaluation,
+    figure_multi_country_trend,
+    figure_predictions,
+    figure_stacked_area_percent,
+    figure_total_trend,
+    figure_yoy_growth,
 )
+
+_PLOTLY_CONFIG = dict(displayModeBar=True, displaylogo=False, modeBarButtonsToRemove=["lasso2d", "select2d"])
 
 
 def _inject_dashboard_css() -> None:
@@ -38,6 +42,10 @@ def _inject_dashboard_css() -> None:
                 background: linear-gradient(165deg, #0f1419 0%, #151b22 45%, #0d1218 100%);
                 color: #e8eaed;
             }
+            .main .block-container {
+                padding-top: 1.5rem;
+                padding-bottom: 2.75rem;
+            }
             section[data-testid="stSidebar"] {
                 background: linear-gradient(180deg, #12181f 0%, #0c1016 100%);
                 border-right: 1px solid #1f2a35;
@@ -48,7 +56,7 @@ def _inject_dashboard_css() -> None:
             .dashboard-hero {
                 padding: 0.25rem 0 1rem 0;
                 border-bottom: 1px solid #243040;
-                margin-bottom: 1.25rem;
+                margin-bottom: 1.5rem;
             }
             .dashboard-hero h1 {
                 color: #e8f5e9;
@@ -66,7 +74,7 @@ def _inject_dashboard_css() -> None:
                 font-size: 1.35rem;
                 font-weight: 700;
                 color: #a5d6a7;
-                margin: 1.5rem 0 0.75rem 0;
+                margin: 1.75rem 0 0.85rem 0;
                 padding-bottom: 0.35rem;
                 border-bottom: 2px solid #2e7d32;
                 display: inline-block;
@@ -76,15 +84,28 @@ def _inject_dashboard_css() -> None:
                 background: #1a222d;
                 border: 1px solid #2a3544;
                 border-radius: 12px;
-                padding: 1rem 1.15rem 1.1rem 1.15rem;
-                margin-bottom: 1rem;
+                padding: 1.1rem 1.2rem 1.2rem 1.2rem;
+                margin-bottom: 1.25rem;
                 box-shadow: 0 8px 24px rgba(0,0,0,0.35);
             }
-            div[data-testid="stMetric"] {
-                background: #1a222d;
+            .metric-hover-card {
+                background: #161c26;
                 border: 1px solid #2a3544;
-                border-radius: 10px;
-                padding: 0.5rem;
+                border-radius: 12px;
+                padding: 0.7rem 0.9rem;
+                box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+                transition: transform 0.18s ease, box-shadow 0.18s ease;
+                min-height: 5.2rem;
+            }
+            .metric-hover-card:hover {
+                transform: scale(1.03);
+                box-shadow: 0 12px 32px rgba(46, 125, 50, 0.25);
+                border-color: #3d6b42;
+            }
+            hr {
+                border: none;
+                border-top: 1px solid #2a3544;
+                margin: 1.75rem 0 1.5rem 0;
             }
         </style>
         """,
@@ -104,173 +125,147 @@ def _section_header(title: str) -> None:
     st.markdown(f'<p class="section-header">{title}</p>', unsafe_allow_html=True)
 
 
-def _per_country_trend_slope(df: pd.DataFrame, country: str) -> float:
-    s = df[df["country"] == country].groupby("year")["forest_loss_area"].sum().sort_index()
-    if len(s) < 2:
-        return float("nan")
-    x = s.index.to_numpy(dtype=float)
-    y = s.to_numpy(dtype=float)
-    m, _ = np.polyfit(x, y, 1)
-    return float(m)
+def _plotly(fig) -> None:
+    st.plotly_chart(fig, use_container_width=True, config=_PLOTLY_CONFIG)
 
 
-def compute_key_observations(df: pd.DataFrame) -> list[str]:
-    """Bullet-style observations for the dashboard."""
-    bullets: list[str] = []
-    if df.empty:
-        return ["- No rows available after cleaning."]
-
-    by_country = df.groupby("country", as_index=False)["forest_loss_area"].sum()
-    top_country = by_country.loc[by_country["forest_loss_area"].idxmax(), "country"]
-    bullets.append(
-        f"- **Highest cumulative loss:** **{top_country}** "
-        f"({by_country['forest_loss_area'].max():,.2f} total forest loss area in the dataset)."
-    )
-
-    slopes = []
-    for c in df["country"].unique():
-        m = _per_country_trend_slope(df, c)
-        if np.isfinite(m):
-            slopes.append((c, m))
-    if slopes:
-        fastest = max(slopes, key=lambda t: t[1])
-        bullets.append(
-            f"- **Steepest upward trend (linear slope vs year):** **{fastest[0]}** "
-            f"(approx. **{fastest[1]:+.4f}** loss units per year on average)."
-        )
-
-    yearly = df.groupby("year", as_index=False)["forest_loss_area"].sum().sort_values("year")
-    if len(yearly) >= 2:
-        x = yearly["year"].to_numpy(dtype=float)
-        y = yearly["forest_loss_area"].to_numpy(dtype=float)
-        glob_slope, _ = np.polyfit(x, y, 1)
-        direction = "increasing" if glob_slope > 0 else "decreasing" if glob_slope < 0 else "flat"
-        bullets.append(
-            f"- **Overall global trend:** forest loss appears **{direction}** over time "
-            f"(aggregate slope ≈ **{glob_slope:+.4f}** per year)."
-        )
-
-    peak_row = yearly.loc[yearly["forest_loss_area"].idxmax()]
-    bullets.append(
-        f"- **Peak global loss year:** **{int(peak_row['year'])}** "
-        f"with **{peak_row['forest_loss_area']:,.2f}** total area."
-    )
-
-    if len(yearly) >= 3:
-        yoy = yearly.set_index("year")["forest_loss_area"].pct_change().dropna() * 100.0
-        if not yoy.empty:
-            z = (yoy - yoy.mean()) / (yoy.std() + 1e-12)
-            spikes = yoy[np.abs(z) > 1.5]
-            if not spikes.empty:
-                top_spike_year = int(spikes.abs().idxmax())
-                top_spike_val = float(spikes.loc[top_spike_year])
-                bullets.append(
-                    f"- **Notable volatility:** **{top_spike_year}** saw an exceptional "
-                    f"year-over-year change of **{top_spike_val:+.1f}%** vs the prior year "
-                    f"(relative to typical fluctuations)."
-                )
-            else:
-                bullets.append(
-                    "- **Volatility:** no extreme year-over-year spikes detected "
-                    "beyond ~1.5 standard deviations from the mean."
-                )
-
-    return bullets
+def _metric_in_card(col, label: str, value: str) -> None:
+    with col:
+        st.markdown('<div class="metric-hover-card">', unsafe_allow_html=True)
+        st.metric(label, value)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
-def compute_conclusion_bullets(
+def render_dynamic_insights(
     df: pd.DataFrame,
     models: dict,
     pred_df: pd.DataFrame | None,
     selected_country: str,
-) -> list[str]:
-    out: list[str] = []
+) -> None:
+    """Concise, rule-based callouts using Streamlit alert components."""
+    if df.empty:
+        st.info("No rows available for insights.")
+        return
+
+    loss = df["forest_loss_area"]
+    med = float(loss.median())
+    mean = float(loss.mean())
+
+    if mean > med * 1.4:
+        st.warning(
+            f"**High average loss vs median:** mean (**{mean:,.2f}**) is well above the median "
+            f"(**{med:,.2f}**), which often indicates heavy-tailed values or a few extreme years."
+        )
+    elif mean < med * 0.9:
+        st.info(
+            f"Mean loss (**{mean:,.2f}**) sits **below** the median (**{med:,.2f}**); "
+            "the distribution may skew toward smaller observations."
+        )
+
     yearly = df.groupby("year", as_index=False)["forest_loss_area"].sum().sort_values("year")
     if len(yearly) >= 2:
         x = yearly["year"].to_numpy(dtype=float)
         y = yearly["forest_loss_area"].to_numpy(dtype=float)
         glob_slope, _ = np.polyfit(x, y, 1)
         if glob_slope > 0:
-            out.append(
-                "- **Deforestation signal:** combined national losses in this file **trend upward** "
-                "over the sampled years, which is consistent with sustained pressure on forest cover."
+            st.warning(
+                f"**Rising global aggregate:** summed yearly loss **increases** in this file "
+                f"(approx. **{glob_slope:+.4f}** per year on a straight-line fit)."
             )
         elif glob_slope < 0:
-            out.append(
-                "- **Deforestation signal:** aggregate losses **trend downward** in this dataset—"
-                "interpret with care (policy, data coverage, or methodology may drive this)."
+            st.success(
+                f"**Falling global aggregate:** summed yearly loss **decreases** "
+                f"(slope ≈ **{glob_slope:+.4f}** per year)—confirm with context before inferring recovery."
             )
         else:
-            out.append("- **Deforestation signal:** aggregate losses look **roughly flat** across years in this file.")
+            st.info("Global aggregate loss is **roughly flat** across the sampled years.")
 
-    top3 = (
-        df.groupby("country")["forest_loss_area"]
-        .sum()
-        .sort_values(ascending=False)
-        .head(3)
-        .index.tolist()
+    peak = yearly.loc[yearly["forest_loss_area"].idxmax()]
+    st.info(
+        f"**Peak global year:** **{int(peak['year'])}** with **{peak['forest_loss_area']:,.2f}** total loss."
     )
-    if top3:
-        out.append(
-            "- **Most affected (by total recorded loss):** "
-            + ", ".join(f"**{c}**" for c in top3)
-            + "."
-        )
+
+    top3 = df.groupby("country")["forest_loss_area"].sum().sort_values(ascending=False).head(3)
+    if len(top3):
+        parts = ", ".join(f"**{c}** ({v:,.2f})" for c, v in top3.items())
+        st.info(f"**Largest cumulative loss (top 3):** {parts}.")
+
+    if len(yearly) >= 3:
+        yoy = yearly.set_index("year")["forest_loss_area"].pct_change().dropna() * 100.0
+        if not yoy.empty:
+            z = (yoy - yoy.mean()) / (yoy.std() + 1e-12)
+            if (np.abs(z) > 1.5).any():
+                y_spike = int(yoy[np.abs(z) > 1.5].abs().idxmax())
+                st.warning(
+                    f"**Volatility:** **{y_spike}** shows an unusually large year-over-year swing "
+                    "relative to the rest of the series."
+                )
 
     if models:
         r2_vals = [res.r2 for res in models.values() if np.isfinite(res.r2)]
         if r2_vals:
             med_r2 = float(np.nanmedian(r2_vals))
-            out.append(
-                f"- **Linear trend model:** across countries with enough history, "
-                f"typical hold-out **R² ≈ {med_r2:.2f}**—a simple `year → loss` line is "
-                f"{'moderately' if med_r2 > 0.4 else 'weakly'} explanatory here."
-            )
+            if med_r2 < 0.25:
+                st.warning(
+                    f"**Model caution:** median hold-out **R² ≈ {med_r2:.2f}**—a simple linear trend "
+                    "in `year` explains little variance for many countries."
+                )
+            else:
+                st.success(
+                    f"**Model signal:** median hold-out **R² ≈ {med_r2:.2f}** for trained countries—"
+                    "trends are moderately captured by the linear specification."
+                )
     else:
-        out.append(
-            "- **Linear trend model:** not enough per-country history in this file to train "
-            "the default regression for most countries."
-        )
+        st.info("**Models:** no country has **≥3** distinct years, so linear regressions were not trained.")
 
     if pred_df is not None and selected_country in pred_df["country"].values:
         sub = pred_df[pred_df["country"] == selected_country].sort_values("year")
         if len(sub) >= 2:
-            first, last = sub["predicted_forest_loss_area"].iloc[0], sub["predicted_forest_loss_area"].iloc[-1]
-            proj = "rising" if last > first else "falling" if last < first else "stable"
-            out.append(
-                f"- **Projection for {selected_country}:** the fitted line suggests **{proj}** "
-                f"predicted loss over the next horizon shown in the chart."
-            )
+            first = sub["predicted_forest_loss_area"].iloc[0]
+            last = sub["predicted_forest_loss_area"].iloc[-1]
+            if last > first:
+                st.warning(
+                    f"**Forecast for {selected_country}:** predicted loss **rises** over the selected horizon."
+                )
+            elif last < first:
+                st.success(
+                    f"**Forecast for {selected_country}:** predicted loss **falls** over the selected horizon."
+                )
+            else:
+                st.info(f"**Forecast for {selected_country}:** predicted loss is **flat** over the horizon.")
 
-    out.append(
-        "- **Real-world implication:** persistent or rising forest loss reduces carbon storage "
-        "and biodiversity; monitoring these trends helps target conservation and restoration."
+    st.info(
+        "**Climate relevance:** persistent or rising forest loss weakens carbon storage and ecosystems; "
+        "pair these indicators with local drivers (land use, policy, and data quality)."
     )
-    return out
 
 
-st.set_page_config(page_title="Deforestation Dashboard", layout="wide", )
+st.set_page_config(
+    page_title="Deforestation Dashboard",
+    layout="wide",
+    page_icon="🌳",
+)
 _inject_dashboard_css()
 
 st.markdown(
     """
     <div class="dashboard-hero">
-        <h1>Deforestation Analysis & Monitoring</h1>
-        <p>Upload forest loss data, explore trends, and review simple linear projections.</p>
+        <h1>🌳 Deforestation Analysis & Monitoring</h1>
+        <p>Upload forest loss data, explore trends on an interactive map, and review simple linear projections.</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
 with st.sidebar:
-    st.markdown("### Data & controls")
+    st.markdown("### 📁 Data & controls")
     st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
-    uploaded = st.file_uploader("CSV upload (`year`, `country`, `forest_loss_area`)", type=["csv"])
+    uploaded = st.file_uploader("CSV (`year`, `country`, `forest_loss_area`)", type=["csv"])
     st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
     horizon = st.slider("Prediction horizon (years ahead)", min_value=5, max_value=10, value=5)
     st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
     top_n = st.slider("Top N countries (bar chart)", min_value=3, max_value=25, value=6)
-    st.caption("Tip: use a wide layout and scroll for advanced charts and insights.")
+    st.caption("Charts support hover tooltips (country, year, values). Map uses country names or 3-letter ISO codes.")
 
 if uploaded is None:
     st.info("Upload a CSV with columns: **year**, **country**, **forest_loss_area**")
@@ -284,8 +279,9 @@ except Exception as e:
     st.error(f"Data validation/cleaning failed: {e}")
     st.stop()
 
+st.markdown("---")
 _card_open()
-_section_header("Cleaned data & summary")
+_section_header("📊 Cleaned data & summary")
 c1, c2 = st.columns([1, 1])
 with c1:
     st.markdown("**Preview** (first 50 rows)")
@@ -293,48 +289,73 @@ with c1:
 with c2:
     st.markdown("**Dataset health**")
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Rows", f"{len(df):,}")
-    m2.metric("Countries", f"{df['country'].nunique():,}")
-    m3.metric("Min year", f"{int(df['year'].min())}")
-    m4.metric("Max year", f"{int(df['year'].max())}")
+    _metric_in_card(m1, "Rows", f"{len(df):,}")
+    _metric_in_card(m2, "Countries", f"{df['country'].nunique():,}")
+    _metric_in_card(m3, "Min year", f"{int(df['year'].min())}")
+    _metric_in_card(m4, "Max year", f"{int(df['year'].max())}")
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
     st.markdown("**Country-wise statistics**")
     st.dataframe(summary_statistics(df), use_container_width=True)
 _card_close()
 
-_section_header("Exploratory analysis")
+st.markdown("---")
+_section_header("📈 Exploratory analysis")
 _card_open()
 left, right = st.columns([1, 1])
 with left:
-    st.pyplot(plot_total_trend(df), clear_figure=True)
+    _plotly(figure_total_trend(df))
 with right:
-    st.pyplot(plot_country_comparison(df, top_n=top_n), clear_figure=True)
+    _plotly(figure_country_bars(df, top_n=top_n))
 _card_close()
 
-_section_header("Advanced analysis")
+st.markdown("---")
+_section_header("🔗 Correlation analysis")
+_card_open()
+st.caption(
+    "Pearson correlations across **numeric** columns in your file (e.g. **year**, **forest_loss_area**, "
+    "**forest_loss** if present). Constant columns are omitted."
+)
+_plotly(figure_correlation_heatmap(df))
+_card_close()
+
+st.markdown("---")
+_section_header("🗺️ Global forest loss map")
+_card_open()
+st.caption(
+    "Total **forest_loss_area** by **country**. Use **ISO 3166-1 alpha-3** codes (e.g. IND, USA) "
+    "for best geometry match; otherwise English **country names** are used."
+)
+_plotly(figure_choropleth_country_loss(df))
+_card_close()
+
+st.markdown("---")
+_section_header("🔬 Advanced analysis")
 _card_open()
 r1c1, r1c2 = st.columns([1, 1])
 with r1c1:
-    st.pyplot(plot_multi_country_trend(df), clear_figure=True)
+    _plotly(figure_multi_country_trend(df, max_countries=8))
 with r1c2:
-    st.pyplot(plot_stacked_area(df), clear_figure=True)
+    _plotly(figure_stacked_area_percent(df, max_countries=10))
 r2c1, r2c2 = st.columns([1, 1])
 with r2c1:
-    st.pyplot(plot_yoy_growth(df), clear_figure=True)
+    _plotly(figure_yoy_growth(df, max_countries=10))
 with r2c2:
-    st.pyplot(plot_cumulative(df), clear_figure=True)
-st.pyplot(plot_heatmap(df), clear_figure=True)
+    _plotly(figure_cumulative(df, max_countries=10))
+_plotly(figure_country_year_heatmap(df))
 _card_close()
 
+st.markdown("---")
 _card_open()
-_section_header("Country deep dive")
+_section_header("🌍 Country deep dive")
 country = st.selectbox(
     "Select a country for detailed trend, model, and evaluation",
     options=sorted(df["country"].unique().tolist()),
 )
-st.pyplot(plot_country_trend(df, country), clear_figure=True)
+_plotly(figure_country_trend(df, country))
 _card_close()
 
-_section_header("Machine learning (linear regression)")
+st.markdown("---")
+_section_header("🤖 Machine learning (linear regression)")
 models = train_model_per_country(df)
 pred_df: pd.DataFrame | None = None
 
@@ -356,10 +377,10 @@ else:
         }
     )
     pred_df = predict_next_years(models, last_year=int(df["year"].max()), n_years=horizon)
-    st.pyplot(plot_predictions(pred_df, country), clear_figure=True)
+    _plotly(figure_predictions(pred_df, country))
 
     eval_df = get_test_set_actual_predicted(df, country)
-    st.pyplot(plot_model_evaluation(eval_df, country), clear_figure=True)
+    _plotly(figure_model_evaluation(eval_df, country))
 
     with st.expander("See prediction table"):
         st.dataframe(
@@ -371,17 +392,14 @@ else:
 if models and pred_df is None:
     pred_df = predict_next_years(models, last_year=int(df["year"].max()), n_years=horizon)
 
-_section_header("Insights & conclusion")
+st.markdown("---")
+_section_header("💡 Insights")
 _card_open()
-st.markdown("### Key observations")
-obs = compute_key_observations(df)
-st.markdown("\n".join(obs))
-st.markdown("### Conclusion")
-concl = compute_conclusion_bullets(df, models, pred_df, country)
-st.markdown("\n".join(concl))
+render_dynamic_insights(df, models, pred_df, country)
 _card_close()
 
-_section_header("Export")
+st.markdown("---")
+_section_header("📤 Export")
 _card_open()
 processed_dir = os.path.join(PROJECT_ROOT, "data", "processed")
 os.makedirs(processed_dir, exist_ok=True)

@@ -14,7 +14,7 @@ FIGSIZE_TALL = (10, 6)
 
 
 def _apply_base_style(ax: plt.Axes) -> None:
-    ax.grid(True, alpha=0.35, linestyle="--", linewidth=0.8)
+    ax.grid(True, alpha=0.14, linestyle=":", linewidth=0.7)
     ax.tick_params(axis="both", labelsize=10)
 
 
@@ -118,7 +118,7 @@ def plot_multi_country_trend(df: pd.DataFrame, max_countries: int = 18):
     )
     ax.set_xlabel("Year", fontsize=11)
     ax.set_ylabel("Forest loss area", fontsize=11)
-    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8, framealpha=0.9)
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8, framealpha=0.9, ncol=1)
     _apply_base_style(ax)
     fig.tight_layout()
     return fig
